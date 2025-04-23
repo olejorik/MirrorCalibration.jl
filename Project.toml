@@ -1,0 +1,13 @@
+name = "MirrorCalibration"
+uuid = "59918b65-ac46-41ac-bfb8-8ca8fa7fc73e"
+authors = ["Oleg Soloviev"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.8"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
