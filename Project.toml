@@ -1,10 +1,36 @@
 name = "MirrorCalibration"
 uuid = "59918b65-ac46-41ac-bfb8-8ca8fa7fc73e"
 authors = ["Oleg Soloviev"]
-version = "1.0.0-DEV"
+version = "0.0.1"
+
+[deps]
+EllipseGeometry = "56405771-b37b-4c45-a787-cc0a2fd6b078"
+GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+PhaseBases = "c4d961ba-0ec2-4b0f-a161-22c1127deb0e"
+PhaseFromInterferograms = "0563bf26-974b-441d-8ac2-0f187e765f6c"
+PhasePlots = "a0b7e00f-cd9f-425a-8c23-86a36337abea"
+PhaseUtils = "0a972ece-1c72-4cf4-81fb-1c0dc9b4cac1"
+SampledDomains = "a82262f3-35bb-4fed-9e1b-5653a3e90076"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[weakdeps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 
 [compat]
-julia = "1.8"
+EllipseGeometry = "1.0.0"
+GLMakie = "0.11.5"
+HDF5 = "0.17.2"
+JLD2 = "0.5"
+LinearAlgebra = "1.11.0"
+PhaseBases = "0.1.0"
+PhaseFromInterferograms = "0.1.0"
+PhasePlots = "1.0.0"
+PhaseUtils = "1.0.0"
+SampledDomains = "0.1.0"
+julia = "1"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
