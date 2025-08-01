@@ -18,6 +18,6 @@ include("HardwareInterface.jl")
 
 export load_responses, load_interferograms, save_voltages
 export process_interferograms, inspect_interferograms
-export record_interferograms, MirrorCalibrationConfig
+export record_interferograms, MirrorCalibrationConfig, calibration_voltages
 
 end

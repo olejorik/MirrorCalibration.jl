@@ -49,12 +49,13 @@ function validate_config(config::MirrorCalibrationConfig)
 end
 
 """
-    record_interferograms(voltage_dict, config::MirrorCalibrationConfig)
+    record_interferograms(voltage_names, voltage_patterns, config::MirrorCalibrationConfig)
 
 Record interferograms for a set of voltages using PythonCall interface to python_oko.
 
 # Arguments
-- `voltage_dict::Dict{String, Vector{Float64}}`: Dictionary with voltage pattern names as keys and voltage vectors as values
+- `voltage_names::Vector{String}`: Names for each voltage pattern (must match length of voltage_patterns)
+- `voltage_patterns::Vector{Vector{Float64}}`: Voltage vectors for each pattern (all must have length n_actuators)
 - `config::MirrorCalibrationConfig`: Configuration structure containing mirror and experiment parameters
 
 # Returns
@@ -63,10 +64,8 @@ Record interferograms for a set of voltages using PythonCall interface to python
 # Example
 ```julia
 # Create voltage patterns
-voltages = Dict(
-    "bias" => zeros(37),
-    "poke_1" => [1.0; zeros(36)]
-)
+names = ["bias", "poke_1", "poke_8"]
+patterns = [zeros(37), [1.0; zeros(36)], [zeros(7); 1.0; zeros(29)]]
 
 # Configure experiment
 config = MirrorCalibrationConfig(
@@ -79,17 +78,31 @@ config = MirrorCalibrationConfig(
 )
 
 # Record interferograms
-success = record_interferograms(voltages, config)
+success = record_interferograms(names, patterns, config)
 ```
 """
 function record_interferograms(
-    voltage_dict::Dict{String,Vector{Float64}}, config::MirrorCalibrationConfig
+    voltage_names::Vector{String},
+    voltage_patterns::Vector{Vector{Float64}},
+    config::MirrorCalibrationConfig,
 )
     ## Validate configuration
     validate_config(config)
+
+    ## Validate input arrays
+    if length(voltage_names) != length(voltage_patterns)
+        error(
+            "voltage_names and voltage_patterns must have the same length (got $(length(voltage_names)) and $(length(voltage_patterns)))",
+        )
+    end
+
+    if isempty(voltage_names)
+        error("Must provide at least one voltage pattern")
+    end
+
     ## Log the start of the experiment
     @info "Recording interferograms using PythonCall interface..."
-    @info "Voltage patterns: $(collect(keys(voltage_dict)))"
+    @info "Voltage patterns: $(voltage_names)"
     @info "Configuration: $(config.mirror_type), $(config.experiment_mode), $(config.n_actuators) actuators"
 
     try
@@ -112,22 +125,18 @@ function record_interferograms(
 
         @info "Configuration: $DM_CHANNELS channels, $MIRROR_TYPE, $DAC_TYPE, $EXPERIMENT_MODE"
 
-        ## Convert voltage dictionary to Python format (mimic generate_voltages output)
-        voltage_names = collect(keys(voltage_dict))
-        voltage_values = collect(values(voltage_dict))
-
         ## Ensure all voltage vectors have the correct length
-        for (name, voltages) in voltage_dict
+        for (i, voltages) in enumerate(voltage_patterns)
             if length(voltages) != config.n_actuators
                 error(
-                    "Voltage pattern '$name' has $(length(voltages)) elements, expected $(config.n_actuators)",
+                    "Voltage pattern '$(voltage_names[i])' has $(length(voltages)) elements, expected $(config.n_actuators)",
                 )
             end
         end
 
         ## Create voltage arrays in the same format as Python generate_voltages function
         ## Convert each Julia vector to a numpy array, then create a list of arrays
-        voltage_arrays = [np.array(v) for v in voltage_values]
+        voltage_arrays = [np.array(v) for v in voltage_patterns]
 
         ## Stack the arrays (this mimics what Python's generate_voltages returns)
         test_voltages = np.stack(voltage_arrays)
@@ -194,44 +203,121 @@ function record_interferograms(
     end
 end
 
+
 """
-    create_simple_voltage_patterns(n_actuators::Int; actuator_indices::Vector{Int}=[1])
+    calibration_voltages(n_actuators::Int;
+                        nlevels::Int=5,
+                        bias::Float64=0.0,
+                        actuators::Vector{Int}=collect(1:n_actuators),
+                        trace_PTT::Bool=false,
+                        reference_voltages::Union{Vector{Float64}, Nothing}=nothing)
 
-Create simple voltage patterns for basic mirror testing.
+Generate calibration voltage patterns for mirror characterization.
 
-# Arguments
+This function creates ordered voltage patterns where each actuator is tested
+individually at multiple voltage levels while keeping all other actuators at a bias voltage.
+
+## Arguments
 - `n_actuators::Int`: Total number of actuators in the mirror
-- `actuator_indices::Vector{Int}`: Indices of actuators to poke (default: [1])
+- `nlevels::Int=5`: Number of voltage levels to test for each actuator (distributed from -1 to 1)
+- `bias::Float64=0.0`: Bias voltage applied to all non-tested actuators (normalized -1 to 1)
+- `actuators::Vector{Int}=collect(1:n_actuators)`: Which actuators to test (1-indexed)
+- `trace_PTT::Bool=false`: If true, insert reference voltages between each test pattern
+- `reference_voltages::Union{Vector{Float64}, Nothing}=nothing`: Custom reference pattern (defaults to bias pattern)
 
-# Returns
-- `Dict{String, Vector{Float64}}`: Dictionary with voltage pattern names and voltage vectors
+## Returns
+- `Tuple{Vector{String}, Vector{Vector{Float64}}}`: Tuple of (voltage_names, voltage_patterns) where:
+  - `voltage_names`: Ordered vector of descriptive pattern names
+  - `voltage_patterns`: Ordered vector of voltage vectors (each normalized -1 to 1)
 
-# Example
+## Example
 ```julia
-# Create patterns for a 37-actuator mirror, poking actuators 1 and 8
-voltages = create_simple_voltage_patterns(37; actuator_indices=[1, 8])
+# Generate voltages for 37-actuator mirror, testing actuators 1, 8, 20 with 5 levels each
+voltage_names, voltage_patterns = calibration_voltages(37;
+    nlevels=5,
+    bias=-0.5,
+    actuators=[1, 8, 20],
+    trace_PTT=true
+)
 ```
 """
-function create_simple_voltage_patterns(n_actuators::Int; actuator_indices::Vector{Int}=[1])
-    voltage_dict = Dict{String,Vector{Float64}}()
+function calibration_voltages(
+    n_actuators::Int;
+    nlevels::Int=5,
+    bias::Float64=0.0,
+    actuators::Vector{Int}=collect(1:n_actuators),
+    trace_PTT::Bool=false,
+    reference_voltages::Union{Vector{Float64},Nothing}=nothing,
+)
 
-    ## Bias pattern (all actuators at zero)
-    voltage_dict["bias"] = zeros(Float64, n_actuators)
+    ## Validate inputs
+    @assert n_actuators > 0 "Number of actuators must be positive"
+    @assert nlevels > 0 "Number of levels must be positive"
+    @assert -1.0 <= bias <= 1.0 "Bias voltage must be in range [-1, 1]"
+    @assert all(1 <= act <= n_actuators for act in actuators) "All actuator indices must be in range [1, $n_actuators]"
 
-    ## Individual actuator poke patterns
-    for idx in actuator_indices
-        if idx < 1 || idx > n_actuators
-            @warn "Actuator index $idx is out of range [1, $n_actuators], skipping"
-            continue
-        end
-
-        pattern_name = "poke_$(idx)"
-        voltages = zeros(Float64, n_actuators)
-        voltages[idx] = 1.0
-        voltage_dict[pattern_name] = voltages
+    ## Set up reference voltage pattern
+    if reference_voltages === nothing
+        reference_voltages = fill(bias, n_actuators)
+    else
+        @assert length(reference_voltages) == n_actuators "Reference voltages must have length $n_actuators"
+        @assert all(-1.0 <= v <= 1.0 for v in reference_voltages) "All reference voltages must be in range [-1, 1]"
     end
 
-    @info "Created $(length(voltage_dict)) voltage patterns: $(collect(keys(voltage_dict)))"
+    ## Generate voltage levels for testing (linearly spaced from -1 to 1)
+    test_levels = if nlevels == 1
+        [0.0]  ## Single level at zero if only one level requested
+    else
+        range(-1.0, 1.0; length=nlevels)
+    end
 
-    return voltage_dict
+    ## Initialize ordered arrays for voltage names and patterns
+    voltage_names = String[]
+    voltage_patterns = Vector{Float64}[]
+
+    ## Add initial reference pattern if trace_PTT is enabled
+    if trace_PTT
+        push!(voltage_names, "ref_initial")
+        push!(voltage_patterns, copy(reference_voltages))
+    end
+
+    ## Generate voltage patterns for each actuator
+    for actuator in actuators
+        for (level_idx, voltage_level) in enumerate(test_levels)
+            ## Start with bias/reference pattern
+            pattern = copy(reference_voltages)
+
+            ## Set the test actuator to the current voltage level
+            pattern[actuator] = voltage_level
+
+            ## Create descriptive name
+            pattern_name = "act$(actuator)_lev$(level_idx)_v$(round(voltage_level, digits=2))"
+            push!(voltage_names, pattern_name)
+            push!(voltage_patterns, pattern)
+
+            ## Add reference pattern between test patterns if trace_PTT is enabled
+            if trace_PTT &&
+                !(actuator == actuators[end] && level_idx == length(test_levels))
+                ref_name = "ref_after_act$(actuator)_lev$(level_idx)"
+                push!(voltage_names, ref_name)
+                push!(voltage_patterns, copy(reference_voltages))
+            end
+        end
+    end
+
+    ## Add final reference pattern if trace_PTT is enabled
+    if trace_PTT
+        push!(voltage_names, "ref_final")
+        push!(voltage_patterns, copy(reference_voltages))
+    end
+
+    @info "Generated $(length(voltage_names)) voltage patterns for $(length(actuators)) actuators with $nlevels levels each"
+    if trace_PTT
+        @info "PTT tracing enabled: reference patterns inserted between test patterns"
+    end
+
+    ## Validate that arrays have the same length
+    @assert length(voltage_names) == length(voltage_patterns) "Voltage names and patterns arrays must have the same length"
+
+    return voltage_names, voltage_patterns
 end
