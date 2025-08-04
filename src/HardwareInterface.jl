@@ -297,7 +297,8 @@ function calibration_voltages(
 
             ## Add reference pattern between test patterns if trace_PTT is enabled
             if trace_PTT &&
-                !(actuator == actuators[end] && level_idx == length(test_levels))
+                !(actuator == actuators[end]) &&
+                level_idx == length(test_levels)
                 ref_name = "ref_after_act$(actuator)_lev$(level_idx)"
                 push!(voltage_names, ref_name)
                 push!(voltage_patterns, copy(reference_voltages))
