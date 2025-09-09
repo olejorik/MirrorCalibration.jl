@@ -1,0 +1,169 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  validate-pr:
+    name: Validate Pull Request
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Validate PR title
+      uses: amannn/action-semantic-pull-request@v5
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        types: |
+          feat
+          fix
+          docs
+          style
+          refactor
+          perf
+          test
+          build
+          ci
+          chore
+          revert
+        requireScope: false
+        disallowScopes: |
+          release
+        subjectPattern: ^(?![A-Z]).+$
+        subjectPatternError: |
+          The subject "{subject}" found in the pull request title "{title}"
+          doesn't match the configured pattern. Please ensure that the subject
+          doesn't start with an uppercase character.
+
+    - name: Check for breaking changes
+      run: |
+        echo "Checking for breaking changes..."
+        if git log --oneline ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep -i "BREAKING\|breaking change"; then
+          echo "::warning::Breaking changes detected. Please ensure version bump is appropriate."
+        fi
+
+    - name: Validate branch naming
+      run: |
+        BRANCH_NAME="${{ github.head_ref }}"
+        if [[ ! "$BRANCH_NAME" =~ ^(feature|bugfix|hotfix|docs|chore|refactor|test)/.+ ]] && [[ ! "$BRANCH_NAME" =~ ^(dependabot|copilot)/.+ ]]; then
+          echo "::error::Branch name '$BRANCH_NAME' does not follow the required pattern."
+          echo "::error::Please use: feature/, bugfix/, hotfix/, docs/, chore/, refactor/, or test/ prefix"
+          exit 1
+        fi
+
+    - name: Check PR size
+      run: |
+        FILES_CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | wc -l)
+        LINES_CHANGED=$(git diff --shortstat ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | awk '{print $4+$6}')
+        
+        echo "Files changed: $FILES_CHANGED"
+        echo "Lines changed: $LINES_CHANGED"
+        
+        if [ "$FILES_CHANGED" -gt 20 ]; then
+          echo "::warning::Large PR detected ($FILES_CHANGED files changed). Consider breaking into smaller PRs."
+        fi
+        
+        if [ "$LINES_CHANGED" -gt 500 ]; then
+          echo "::warning::Large PR detected ($LINES_CHANGED lines changed). Consider breaking into smaller PRs."
+        fi
+
+  check-permissions:
+    name: Check User Permissions
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+
+    steps:
+    - name: Check if user has write permissions
+      uses: actions/github-script@v7
+      with:
+        script: |
+          try {
+            const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor
+            });
+            
+            const allowedLevels = ['write', 'admin', 'maintain'];
+            if (!allowedLevels.includes(permission.permission)) {
+              // For external contributors, we still allow the PR but add a comment
+              if (context.eventName === 'pull_request') {
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: '👋 Thank you for your contribution! This PR will require review from a maintainer before it can be merged.'
+                });
+              }
+            }
+          } catch (error) {
+            console.log('Could not check permissions:', error.message);
+          }
+
+  require-review:
+    name: Require Review for External Contributors
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false && github.event.pull_request.author_association != 'MEMBER' && github.event.pull_request.author_association != 'OWNER'
+
+    steps:
+    - name: Request review from maintainers
+      uses: actions/github-script@v7
+      with:
+        script: |
+          await github.rest.pulls.requestReviewers({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number,
+            reviewers: ['olejorik']
+          });
+
+  validate-commits:
+    name: Validate Commit Messages
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Validate commit messages
+      run: |
+        echo "Validating commit messages..."
+        INVALID_COMMITS=0
+        
+        for commit in $(git rev-list ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}); do
+          MESSAGE=$(git log --format=%B -n 1 $commit)
+          SUBJECT=$(echo "$MESSAGE" | head -n 1)
+          
+          # Check if commit message starts with lowercase (except for special prefixes)
+          if [[ ! "$SUBJECT" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|Merge|Initial|Add|Update|Remove|Fix|Bump).*$ ]]; then
+            echo "::warning::Commit $commit has non-conventional subject: $SUBJECT"
+            INVALID_COMMITS=$((INVALID_COMMITS + 1))
+          fi
+          
+          # Check for minimum commit message length
+          if [ ${#SUBJECT} -lt 10 ]; then
+            echo "::warning::Commit $commit has too short subject (${#SUBJECT} chars): $SUBJECT"
+            INVALID_COMMITS=$((INVALID_COMMITS + 1))
+          fi
+        done
+        
+        if [ $INVALID_COMMITS -gt 0 ]; then
+          echo "::warning::Found $INVALID_COMMITS commits with non-conventional messages. Consider using conventional commit format."
+        fi

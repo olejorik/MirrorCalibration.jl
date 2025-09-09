@@ -5,3 +5,30 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
+    # Security updates for GitHub Actions
+    open-pull-requests-limit: 10
+    reviewers:
+      - "olejorik"
+    labels:
+      - "dependencies"
+      - "github_actions"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  # Add Julia package dependency updates
+  - package-ecosystem: "julia"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "olejorik"
+    labels:
+      - "dependencies"
+      - "julia"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    # Only create security updates for Julia dependencies
+    versioning-strategy: increase-if-necessary

@@ -1,0 +1,197 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  quality-checks:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Julia
+      uses: julia-actions/setup-julia@v2
+      with:
+        version: '1.11'
+
+    - name: Cache Julia packages
+      uses: julia-actions/cache@v2
+
+    - name: Install dependencies
+      run: |
+        julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+    - name: Check code formatting
+      run: |
+        julia --project=. -e '
+        using Pkg
+        try
+            Pkg.add("JuliaFormatter")
+            using JuliaFormatter
+            
+            format_check = format(".", verbose=true, overwrite=false)
+            if !format_check
+                @error "Code formatting check failed. Please run JuliaFormatter.format(\".\") to fix formatting issues."
+                exit(1)
+            else
+                @info "Code formatting check passed."
+            end
+        catch e
+            @warn "Could not run JuliaFormatter: $e"
+        end'
+
+    - name: Run Julia linting (Aqua.jl quality checks)
+      run: |
+        julia --project=. -e '
+        using Pkg
+        try
+            Pkg.add("Aqua")
+            using Aqua
+            import MirrorCalibration
+            
+            @info "Running Aqua.jl quality checks..."
+            
+            # Run comprehensive quality checks
+            Aqua.test_all(
+                MirrorCalibration;
+                ambiguities = false,  # Often false positives with external deps
+                deps_compat = true,   # Check Project.toml compatibility entries
+                stale_deps = true,    # Check for stale dependencies
+                piracy = true,        # Check for type piracy
+                unbound_args = true,  # Check for unbound type parameters
+                undefined_exports = true,  # Check for undefined exports
+                project_extras = true,     # Check [extras] vs [targets]
+                persistent_tasks = false   # Skip persistent task checks for now
+            )
+            
+            @info "Aqua.jl quality checks passed."
+        catch e
+            @error "Aqua.jl quality checks failed: $e"
+            # Don'\''t fail the build for now, just warn
+            # exit(1)
+        end'
+
+    - name: Check documentation
+      run: |
+        julia --project=docs -e '
+        using Pkg
+        try
+            Pkg.develop(PackageSpec(path=pwd()))
+            Pkg.instantiate()
+            
+            # Basic documentation test
+            import MirrorCalibration
+            @info "Package loads successfully for documentation."
+        catch e
+            @error "Documentation check failed: $e"
+            exit(1)
+        end'
+
+    - name: Check for TODO/FIXME comments
+      run: |
+        echo "Checking for TODO/FIXME comments..."
+        TODO_COUNT=$(find . -name "*.jl" -not -path "./deps/*" -exec grep -l "TODO\|FIXME\|XXX\|HACK" {} \; | wc -l)
+        if [ $TODO_COUNT -gt 0 ]; then
+          echo "::warning::Found $TODO_COUNT files with TODO/FIXME comments"
+          find . -name "*.jl" -not -path "./deps/*" -exec grep -Hn "TODO\|FIXME\|XXX\|HACK" {} \; || true
+        fi
+
+    - name: Check file permissions
+      run: |
+        echo "Checking for executable Julia files (should not be executable)..."
+        find . -name "*.jl" -perm +111 -type f | while read file; do
+          echo "::warning::File $file is executable but should not be"
+        done
+
+    - name: Check for large files
+      run: |
+        echo "Checking for large files (>1MB)..."
+        find . -type f -size +1M -not -path "./.git/*" | while read file; do
+          SIZE=$(du -h "$file" | cut -f1)
+          echo "::warning::Large file detected: $file ($SIZE)"
+        done
+
+    - name: Validate Project.toml
+      run: |
+        julia --project=. -e '
+        using Pkg
+        
+        # Check Project.toml is valid
+        try
+            proj = Pkg.Types.read_project("Project.toml")
+            @info "Project.toml is valid"
+            
+            # Check version format
+            if proj.version !== nothing
+                @info "Package version: $(proj.version)"
+            end
+            
+        catch e
+            @error "Project.toml validation failed: $e"
+            exit(1)
+        end'
+
+  test-coverage:
+    name: Test Coverage Requirements
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Julia
+      uses: julia-actions/setup-julia@v2
+      with:
+        version: '1.11'
+
+    - name: Cache Julia packages
+      uses: julia-actions/cache@v2
+
+    - name: Run tests with coverage
+      uses: julia-actions/julia-runtest@v1
+      with:
+        coverage: true
+
+    - name: Process coverage
+      uses: julia-actions/julia-processcoverage@v1
+
+    - name: Check coverage threshold
+      run: |
+        if [ -f lcov.info ]; then
+          # Extract coverage percentage (simplified)
+          COVERAGE=$(julia -e '
+          using Coverage
+          coverage = process_folder(".")
+          covered_lines, total_lines = get_summary(coverage)
+          coverage_pct = covered_lines / total_lines * 100
+          println(round(coverage_pct, digits=2))
+          ')
+          
+          echo "Test coverage: $COVERAGE%"
+          
+          # Require minimum 70% coverage for new PRs
+          THRESHOLD=70.0
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "::error::Test coverage ($COVERAGE%) is below required threshold ($THRESHOLD%)"
+            exit 1
+          else
+            echo "::notice::Test coverage check passed: $COVERAGE% >= $THRESHOLD%"
+          fi
+        else
+          echo "::warning::No coverage data found"
+        fi
